@@ -1,0 +1,131 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: ks-vector
+  namespace: kubesphere-logging-system
+  labels:
+    app.kubernetes.io/component: Agent
+    app.kubernetes.io/instance: ks-vector
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: vector
+    app.kubernetes.io/version: 0.29.1-distroless-libc
+    helm.sh/chart: vector-0.21.1
+  annotations:
+    meta.helm.sh/release-name: ks-vector
+    meta.helm.sh/release-namespace: kubesphere-logging-system
+data:
+  vector.yaml: |-
+    api:
+      address: 0.0.0.0:8686
+      enabled: true
+      playground: true
+    data_dir: /vector-data-dir
+    sources:
+      metrics:
+        type: internal_metrics
+      kube_sys_logs:
+        extra_namespace_label_selector: kubesphere.io/workspace=system-workspace
+        namespace_annotation_fields:
+          namespace_labels: ""
+        node_annotation_fields:
+          node_labels: ""
+        pod_annotation_fields:
+          container_id: .kubernetes.docker_id
+          container_image_id: ""
+          pod_annotations: ""
+          pod_ip: ""
+          pod_ips: ""
+          pod_labels: ""
+          pod_namespace: .kubernetes.namespace_name
+          pod_node_name: .kubernetes.node_name
+          pod_owner: ""
+          pod_uid: ""
+        type: kubernetes_logs
+      kube_app_logs:
+        extra_namespace_label_selector: kubesphere.io/logs=true
+        namespace_annotation_fields:
+          namespace_labels: ""
+        node_annotation_fields:
+          node_labels: ""
+        pod_annotation_fields:
+          container_id: .kubernetes.docker_id
+          container_image_id: ""
+          pod_annotations: ""
+          pod_ip: ""
+          pod_ips: ""
+          pod_labels: ""
+          pod_namespace: .kubernetes.namespace_name
+          pod_node_name: .kubernetes.node_name
+          pod_owner: ""
+          pod_uid: ""
+        type: kubernetes_logs
+    transforms:
+      kube_sys_logs_remapped:
+        inputs:
+        - kube_sys_logs
+        source: |-
+          .log = .message
+          .time = .timestamp
+          del(.file)
+          del(.message)
+          del(.timestamp_end)
+          del(.stream)
+          del(.source_type)
+        type: remap
+      kube_app_logs_remapped:
+        inputs:
+        - kube_app_logs
+        source: |-
+          .log = .message
+          .time = .timestamp
+          del(.file)
+          del(.message)
+          del(.timestamp_end)
+          del(.stream)
+          del(.source_type)
+        type: remap
+      kube_sys_logs_route:
+        inputs:
+        - kube_sys_logs_remapped
+        route:
+          es:
+            type: is_log
+        type: route
+      kube_app_logs_route:
+        inputs:
+        - kube_app_logs_remapped
+        route:
+          kafka:
+            type: is_log
+        type: route
+    sinks:
+      es:
+        type: elasticsearch
+        api_version: v6
+        inputs:
+          - kube_sys_logs_route.es
+        bulk:
+          index: ks-logstash-log-%Y.%m.%d
+        endpoints:
+          - http://elasticsearch-logging-data.kubesphere-logging-system.svc:9200
+      prometheus_remote_write:
+        type: prometheus_remote_write
+        inputs: 
+          - metrics
+        endpoint: http://prometheus-k8s.kubesphere-monitoring-system:9090/api/v1/write
+      kafka:
+        type: kafka
+        inputs:
+          - kube_app_logs_route.kafka
+        bootstrap_servers: kafka:9092
+        compression: none
+        headers_key: headers
+        key_field: user_id
+        librdkafka_options:
+          fetch.error.backoff.ms: "1000"
+          socket.send.buffer.bytes: "100"
+        message_timeout_ms: 300000
+        socket_timeout_ms: 60000
+        topic: "{{ .kubernetes.namespace_name }}"
+        encoding:
+          codec: json 
